@@ -39,28 +39,47 @@ TransformerStockTrader
 
 ### Training
 ```bash
-python trader.py train --epochs 150
+python core/trader.py train --epochs 150
 ```
 
 ### Making Predictions
 ```bash
-python trader.py predict
+python core/trader.py predict
 ```
 
 ### Future Testing
 ```bash
-python future_test.py
+python core/future_test.py
+```
+
+### Live Paper Trading
+```bash
+# Set Alpaca credentials
+export ALPACA_API_KEY="your_key"
+export ALPACA_SECRET_KEY="your_secret"
+
+# Execute daily trade
+python trading/daily_trader.py
 ```
 
 ## 📁 Project Structure
 
-- `model.py` - TransformerStockTrader architecture
-- `data_processor.py` - Anonymous feature extraction and S&P 500 data
-- `training_system.py` - Enhanced profit loss and training loop
-- `trader.py` - CLI interface for training and prediction
-- `future_test.py` - 2025 forward validation testing
-- `trained_stock_trader.pth` - Trained model weights
-- `feature_scaler.pkl` - Feature normalization parameters
+```
+StockTrader/
+├── core/                           # ML Research & Training
+│   ├── model.py                   # TransformerStockTrader architecture
+│   ├── data_processor.py          # Anonymous feature extraction
+│   ├── training_system.py         # Enhanced profit loss and training loop
+│   ├── trader.py                  # CLI interface for training/prediction
+│   └── future_test.py             # 2025 forward validation testing
+├── trading/                        # Live Trading Integration  
+│   ├── alpaca_trader.py           # Alpaca paper trading integration
+│   └── daily_trader.py            # Daily execution script
+├── models/                         # Trained Models
+│   ├── trained_stock_trader.pth   # Trained model weights
+│   └── feature_scaler.pkl         # Feature normalization parameters
+└── logs/                          # Trading execution logs
+```
 
 ## 🎨 Key Innovations
 

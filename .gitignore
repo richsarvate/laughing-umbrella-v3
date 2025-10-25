@@ -47,3 +47,6 @@ Thumbs.db
 # Data files (optional - you might want to keep these)
 # *.pkl
 # *.csv
+
+# Trading configuration with API keys
+trading/config.py

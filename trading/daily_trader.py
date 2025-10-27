@@ -40,6 +40,13 @@ def main():
         
         # Execute trade (credentials loaded from config)
         trader = AlpacaTrader()
+        
+        # Check if market is open
+        clock = trader.api.get_clock()
+        if not clock.is_open:
+            logger.info(f"📅 Market closed on {datetime.now().strftime('%Y-%m-%d')} - exiting")
+            return
+        
         trader.execute_daily_trade()
         
         logger.info("✅ Daily trading execution completed")

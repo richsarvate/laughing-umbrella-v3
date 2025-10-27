@@ -127,49 +127,88 @@ class TrainingSystem:
         sequence_length = 30
         training_sequences = []
         training_returns = []
+        training_shuffle_indices = []  # Track shuffle indices to unshuffle predictions
         
         for i in range(sequence_length, len(market_features) - 5):  # Leave room for future returns
             sequence = market_features[i-sequence_length:i]
             returns = future_returns[i-sequence_length]  # Future returns for this day
-            training_sequences.append(sequence)
-            training_returns.append(returns)
+            
+            # Generate random shuffle indices for this sample to prevent position learning
+            shuffle_indices = np.random.permutation(len(self.data_processor.sp500_tickers))
+            
+            # Shuffle both features and returns using the same permutation
+            shuffled_sequence = sequence[:, shuffle_indices, :]  # Shuffle stock dimension
+            shuffled_returns = returns[shuffle_indices]  # Shuffle corresponding returns
+            
+            training_sequences.append(shuffled_sequence)
+            training_returns.append(shuffled_returns)
+            training_shuffle_indices.append(shuffle_indices)
         
         # Convert to tensors
         X_train = torch.FloatTensor(np.array(training_sequences))
         y_train = torch.FloatTensor(np.array(training_returns))
+        shuffle_indices_train = np.array(training_shuffle_indices)
         
         print(f"Training on {len(X_train)} sequences with {len(self.data_processor.sp500_tickers)} stocks")
         
-        # Training loop with profit-based loss (optimized for 500 stocks)
+        # Training loop with profit-based loss and position shuffling
         optimizer = optim.Adam(self.model.parameters(), lr=8e-5)  # Slightly lower LR for stability
         loss_function = EnhancedProfitLoss(loss_penalty_factor=2.0, risk_penalty=0.005)  # Lower risk penalty
         
         self.model.train()
         num_epochs = 150  # Fewer epochs initially due to larger complexity
+        batch_size = 32  # Use batches for more efficient shuffling
         
         for epoch in range(num_epochs):
-            optimizer.zero_grad()
+            # Shuffle training data each epoch for additional randomness
+            epoch_indices = np.random.permutation(len(X_train))
             
-            # Forward pass - returns decision logits
-            decision_logits = self.model(X_train)
+            total_loss = 0.0
+            num_batches = 0
             
-            # Calculate profit-based loss
-            loss = loss_function(decision_logits, y_train)
-            
-            # Backward pass
-            loss.backward()
-            optimizer.step()
+            # Process in batches with fresh shuffling for each batch
+            for batch_start in range(0, len(X_train), batch_size):
+                batch_end = min(batch_start + batch_size, len(X_train))
+                batch_indices = epoch_indices[batch_start:batch_end]
+                
+                # Get batch data
+                X_batch = X_train[batch_indices]
+                y_batch = y_train[batch_indices]
+                
+                # Apply fresh random shuffling to each batch to prevent position learning
+                batch_shuffle_indices = np.random.permutation(len(self.data_processor.sp500_tickers))
+                X_batch_shuffled = X_batch[:, :, batch_shuffle_indices, :]  # Shuffle stock positions
+                y_batch_shuffled = y_batch[:, batch_shuffle_indices]  # Shuffle corresponding returns
+                
+                optimizer.zero_grad()
+                
+                # Forward pass with shuffled positions
+                decision_logits = self.model(X_batch_shuffled)
+                
+                # Calculate loss with shuffled returns
+                loss = loss_function(decision_logits, y_batch_shuffled)
+                
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+                num_batches += 1
             
             if epoch % 10 == 0:
-                avg_return = -loss.item()  # Convert loss back to return for readability
+                avg_loss = total_loss / num_batches
+                avg_return = -avg_loss  # Convert loss back to return for readability
                 print(f"Epoch {epoch}, Average Return: {avg_return:.4f} ({avg_return*100:.2f}%)")
+        
+        # Calculate final average loss across all batches in the last epoch
+        final_avg_loss = total_loss / num_batches
+        final_return = -final_avg_loss  # Convert to return for readability
         
         # Save trained model
         torch.save(self.model.state_dict(), 'trained_stock_trader.pth')
         with open('feature_scaler.pkl', 'wb') as f:
             pickle.dump(self.data_processor.feature_scaler, f)
         
-        final_return = -loss.item()
         print(f"Model training completed! Final average return: {final_return:.4f} ({final_return*100:.2f}%)")
     
     def predict_action(self, target_date: str, model_path: str = None, scaler_path: str = None) -> Tuple[str, Optional[str]]:
@@ -194,13 +233,40 @@ class TrainingSystem:
         input_sequence = market_features[-30:].reshape(1, 30, -1, 3)
         input_tensor = torch.FloatTensor(input_sequence)
         
-        # Make unified prediction
+        # Make unified prediction with multiple shuffles to reduce position bias
         self.model.eval()
         with torch.no_grad():
-            decision_logits = self.model(input_tensor)
-            decision_probabilities = torch.softmax(decision_logits, dim=1)
+            # Run multiple predictions with different random shuffles to average out position bias
+            num_prediction_shuffles = 10
+            all_decision_logits = []
             
-            # Get top 3 predictions
+            for _ in range(num_prediction_shuffles):
+                # Apply random shuffling during prediction to maintain position-agnostic behavior
+                shuffle_indices = np.random.permutation(len(self.data_processor.sp500_tickers))
+                shuffled_input = input_tensor[:, :, shuffle_indices, :]
+                
+                # Get prediction for this shuffle
+                shuffled_logits = self.model(shuffled_input)
+                
+                # Un-shuffle the predictions to restore original stock order
+                # Only un-shuffle stock predictions (indices 2 and onwards)
+                unshuffled_logits = shuffled_logits.clone()
+                stock_logits_shuffled = shuffled_logits[:, 2:]  # Extract stock predictions
+                stock_logits_unshuffled = torch.zeros_like(stock_logits_shuffled)
+                
+                # Reverse the shuffle to get original order
+                reverse_indices = np.argsort(shuffle_indices)
+                stock_logits_unshuffled[:, reverse_indices] = stock_logits_shuffled
+                
+                # Combine HOLD/CASH (unchanged) with unshuffled stock predictions
+                unshuffled_logits[:, 2:] = stock_logits_unshuffled
+                all_decision_logits.append(unshuffled_logits)
+            
+            # Average predictions across all shuffles for robust decision making
+            averaged_logits = torch.stack(all_decision_logits).mean(dim=0)
+            decision_probabilities = torch.softmax(averaged_logits, dim=1)
+            
+            # Get top 3 predictions from averaged results
             top3_probs, top3_indices = torch.topk(decision_probabilities, k=3, dim=1)
             top3_probs = top3_probs[0].tolist()  # Convert to list
             top3_indices = top3_indices[0].tolist()

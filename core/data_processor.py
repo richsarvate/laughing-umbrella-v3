@@ -17,6 +17,8 @@ class MarketDataProcessor:
         self.lookback_days = lookback_days
         self.feature_scaler = StandardScaler()
         self.sp500_tickers = self._get_sp500_tickers()
+        # Create anonymous mapping for training (prevents ticker leakage)
+        self._create_anonymous_mapping()
     
     def _get_sp500_tickers(self) -> List[str]:
         """Get complete S&P 500 ticker list for maximum model performance."""
@@ -78,6 +80,23 @@ class MarketDataProcessor:
         # Remove any duplicates and return first 500
         return list(dict.fromkeys(sp500_tickers))[:500]
     
+    def _create_anonymous_mapping(self):
+        """Create anonymous labels for stocks to prevent ticker symbol leakage during training."""
+        # Create anonymous identifiers that don't reveal company information
+        self.anonymous_stock_ids = [f"STOCK_{i:03d}" for i in range(len(self.sp500_tickers))]
+        
+        # Mapping for debugging/prediction only (not used during training)
+        self.ticker_to_anonymous = {ticker: anon_id for ticker, anon_id in 
+                                  zip(self.sp500_tickers, self.anonymous_stock_ids)}
+        self.anonymous_to_ticker = {anon_id: ticker for ticker, anon_id in 
+                                  self.ticker_to_anonymous.items()}
+        
+    def get_anonymous_stock_info(self, stock_index: int) -> str:
+        """Get anonymous stock identifier for logging purposes only."""
+        if 0 <= stock_index < len(self.anonymous_stock_ids):
+            return self.anonymous_stock_ids[stock_index]
+        return f"UNKNOWN_STOCK_{stock_index}"
+    
     def _calculate_rsi(self, prices: np.ndarray, period: int = 14) -> np.ndarray:
         """Calculate RSI using simple method without talib dependency."""
         if len(prices) < period + 1:
@@ -127,7 +146,13 @@ class MarketDataProcessor:
         return stock_data
     
     def extract_anonymous_features(self, market_data: pd.DataFrame) -> np.ndarray:
-        """Convert raw price data to anonymous technical features."""
+        """Convert raw price data to completely anonymous technical features.
+        
+        This method ensures that:
+        1. No ticker symbols are exposed to the model
+        2. Features are purely technical and position-agnostic
+        3. All stocks are treated identically without company-specific bias
+        """
         num_stocks = len(self.sp500_tickers)
         num_days = len(market_data)
         features_per_stock = 3  # momentum_5d, volatility_20d, rsi_14d
@@ -135,42 +160,54 @@ class MarketDataProcessor:
         # Initialize feature matrix: [days, stocks, features]
         feature_matrix = np.zeros((num_days, num_stocks, features_per_stock))
         
+        # Process each stock anonymously - order doesn't matter since training will shuffle
         for i, ticker in enumerate(self.sp500_tickers):
             try:
-                # Extract price series for this stock
+                # Extract price series for this anonymous stock
                 close_prices = market_data[ticker]['Close'].values
                 
-                # Skip if insufficient data
+                # Skip if insufficient data for reliable feature calculation
                 if len(close_prices) < 21:
+                    # Fill with neutral values for missing data
+                    feature_matrix[:, i, 0] = 0.0  # Neutral momentum
+                    feature_matrix[:, i, 1] = 0.0  # Low volatility
+                    feature_matrix[:, i, 2] = 0.5  # Neutral RSI
                     continue
                 
-                # Feature 1: 5-day momentum (return)
+                # Feature 1: 5-day momentum (return) - purely price-based, anonymous
                 momentum_5d = np.zeros(len(close_prices))
                 momentum_5d[5:] = (close_prices[5:] - close_prices[:-5]) / close_prices[:-5]
                 
-                # Feature 2: 20-day rolling volatility
+                # Feature 2: 20-day rolling volatility - purely statistical, anonymous
                 returns = np.diff(close_prices) / close_prices[:-1]
                 volatility_20d = np.zeros(len(close_prices))
                 for j in range(20, len(close_prices)):
-                    volatility_20d[j] = np.std(returns[j-20:j])
+                    if j >= 20:
+                        volatility_20d[j] = np.std(returns[j-20:j])
                 
-                # Feature 3: 14-day RSI (simplified calculation)
+                # Feature 3: 14-day RSI - purely technical, anonymous
                 rsi_14d = self._calculate_rsi(close_prices, period=14)
                 rsi_14d = np.nan_to_num(rsi_14d, nan=50.0) / 100.0  # Normalize to [0,1]
                 
-                # Store features
+                # Store anonymous features (no ticker information retained)
                 feature_matrix[:, i, 0] = momentum_5d
                 feature_matrix[:, i, 1] = volatility_20d  
                 feature_matrix[:, i, 2] = rsi_14d
                 
             except Exception as e:
-                print(f"Warning: Could not process {ticker}: {e}")
+                # Anonymous error logging - don't expose ticker information
+                print(f"Warning: Could not process stock at index {i}: {str(e)[:50]}...")
+                # Fill with neutral values for problematic stocks
+                feature_matrix[:, i, 0] = 0.0  # Neutral momentum
+                feature_matrix[:, i, 1] = 0.0  # Low volatility  
+                feature_matrix[:, i, 2] = 0.5  # Neutral RSI
                 continue
         
-        # Remove NaN and standardize features
+        # Remove NaN and standardize features globally
         feature_matrix = np.nan_to_num(feature_matrix, nan=0.0)
         
-        # Reshape for standardization: [samples, features]
+        # Global standardization across all stocks and time periods
+        # This ensures no stock-specific scaling bias can be learned
         original_shape = feature_matrix.shape
         flattened = feature_matrix.reshape(-1, features_per_stock)
         standardized = self.feature_scaler.fit_transform(flattened)

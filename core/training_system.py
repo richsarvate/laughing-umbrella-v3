@@ -199,24 +199,34 @@ class TrainingSystem:
         with torch.no_grad():
             decision_logits = self.model(input_tensor)
             decision_probabilities = torch.softmax(decision_logits, dim=1)
-            predicted_choice = torch.argmax(decision_probabilities, dim=1).item()
-            confidence = torch.max(decision_probabilities).item()
+            
+            # Get top 3 predictions
+            top3_probs, top3_indices = torch.topk(decision_probabilities, k=3, dim=1)
+            top3_probs = top3_probs[0].tolist()  # Convert to list
+            top3_indices = top3_indices[0].tolist()
+            
+            predicted_choice = top3_indices[0]
+            confidence = top3_probs[0]
         
-        # Decode unified prediction
-        if predicted_choice == 0:
-            action_name = "HOLD"
-            target_stock = None
-        elif predicted_choice == 1:
-            action_name = "CASH"
-            target_stock = None
-        else:
-            # Model chose specific stock (index 2+ maps to stock)
-            stock_index = predicted_choice - 2
-            action_name = "SWITCH"
-            target_stock = self.data_processor.sp500_tickers[stock_index]
+        # Decode top 3 predictions
+        top3_choices = []
+        for idx, prob in zip(top3_indices, top3_probs):
+            if idx == 0:
+                choice_name = "HOLD"
+                choice_stock = None
+            elif idx == 1:
+                choice_name = "CASH"
+                choice_stock = None
+            else:
+                choice_name = "SWITCH"
+                choice_stock = self.data_processor.sp500_tickers[idx - 2]
+            top3_choices.append((choice_name, choice_stock, prob))
+        
+        # Decode unified prediction (top choice)
+        action_name, target_stock, _ = top3_choices[0]
         
         print(f"Action: {action_name} (confidence: {confidence:.2f})")
         if target_stock:
             print(f"Model selected: {target_stock}")
         
-        return action_name, target_stock
+        return action_name, target_stock, top3_choices

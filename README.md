@@ -118,10 +118,12 @@ The model demonstrates genuine pattern learning:
 
 ## 🎯 Next Steps
 
+- Add switching threshold to prevent overtrading (e.g., only switch if new stock is 5%+ more confident)
 - Paper trading integration with Alpaca
 - Real-time data pipeline implementation
 - Portfolio management enhancements
 - Risk management system expansion
+- Transaction cost modeling and slippage consideration
 
 ## 📄 License
 

@@ -5,6 +5,7 @@ Uses existing trained transformer model for live trading decisions.
 
 import os
 import sys
+import logging
 from datetime import datetime
 import alpaca_trade_api as tradeapi
 
@@ -14,6 +15,8 @@ from training_system import TrainingSystem
 
 # Import trading configuration
 from config import ALPACA_CONFIG, TRADING_CONFIG
+
+logger = logging.getLogger(__name__)
 
 class AlpacaTrader:
     """Minimal Alpaca paper trading integration."""
@@ -34,41 +37,49 @@ class AlpacaTrader:
         self.trading_system = TrainingSystem()
         print("✅ Trading system ready")
     
-    def execute_daily_trade(self):
+    def execute_daily_trade(self, debug_mode=False):
         """Execute one daily trade based on transformer prediction."""
-        print(f"\n🤖 DAILY TRADING - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        print("="*60)
+        logger.info(f"Trade execution started | date={datetime.now().strftime('%Y-%m-%d')} | time={datetime.now().strftime('%H:%M:%S')} | debug_mode={debug_mode}")
         
         # Get model decision
         try:
             today = datetime.now().strftime('%Y-%m-%d')
-            action, target_stock = self.trading_system.predict_action(today)
+            action, target_stock, top3_choices = self.trading_system.predict_action(today)
             decision = {'action': action, 'target_stock': target_stock}
-            print(f"🧠 Model Decision: {decision}")
+            
+            # Log top 3 predictions
+            logger.info(f"Model prediction | action={action} | target_stock={target_stock if target_stock else 'N/A'}")
+            logger.info("Top 3 model choices:")
+            for i, (choice_action, choice_stock, choice_prob) in enumerate(top3_choices, 1):
+                stock_str = choice_stock if choice_stock else choice_action
+                logger.info(f"  #{i}: {stock_str} - confidence={choice_prob:.4f} ({choice_prob*100:.2f}%)")
         except Exception as e:
-            print(f"❌ Error getting model decision: {e}")
+            logger.error(f"Model prediction failed | error={e}")
             return
         
-        # Execute based on decision
-        if decision['action'] == 'CASH':
-            self._go_to_cash()
-        elif decision['action'] == 'HOLD':
-            print("📍 HOLD - No action needed")
-        elif decision['action'] == 'SWITCH':
-            self._switch_to_stock(decision['target_stock'])
+        # Execute based on decision (skip if debug mode)
+        if debug_mode:
+            logger.info(f"DEBUG MODE | would_execute={decision['action']} | target={target_stock if target_stock else 'N/A'} | skipping_actual_execution=true")
+        else:
+            if decision['action'] == 'CASH':
+                self._go_to_cash()
+            elif decision['action'] == 'HOLD':
+                logger.info("Trade action | action=HOLD | description=no_action_needed")
+            elif decision['action'] == 'SWITCH':
+                self._switch_to_stock(decision['target_stock'])
         
         # Show results
         self._print_portfolio()
     
     def _go_to_cash(self):
         """Sell all positions and hold cash."""
-        print("💰 Going to CASH - Selling all positions")
+        logger.info("Trade action | action=CASH | description=selling_all_positions")
         
         try:
             positions = self.api.list_positions()
             for position in positions:
                 if float(position.qty) > 0:
-                    print(f"   📤 Selling {position.qty} shares of {position.symbol}")
+                    logger.info(f"Order submitted | side=sell | symbol={position.symbol} | qty={position.qty} | type=market")
                     self.api.submit_order(
                         symbol=position.symbol,
                         qty=position.qty,
@@ -76,20 +87,20 @@ class AlpacaTrader:
                         type='market',
                         time_in_force='day'
                     )
-            print("✅ All positions sold")
+            logger.info(f"All positions sold | count={len(positions)}")
         except Exception as e:
-            print(f"❌ Error selling positions: {e}")
+            logger.error(f"Error selling positions | error={e}")
     
     def _switch_to_stock(self, target_stock: str):
         """Switch to target stock (sell current, buy target)."""
-        print(f"🔄 SWITCH to {target_stock}")
+        logger.info(f"Trade action | action=SWITCH | target_stock={target_stock}")
         
         try:
             # Sell all current positions
             positions = self.api.list_positions()
             for position in positions:
                 if float(position.qty) > 0:
-                    print(f"   📤 Selling {position.qty} shares of {position.symbol}")
+                    logger.info(f"Order submitted | side=sell | symbol={position.symbol} | qty={position.qty} | type=market")
                     self.api.submit_order(
                         symbol=position.symbol,
                         qty=position.qty,
@@ -110,7 +121,7 @@ class AlpacaTrader:
             shares_to_buy = int((buying_power * self.cash_deployment_pct) / current_price)
             
             if shares_to_buy > 0:
-                print(f"   📥 Buying {shares_to_buy} shares of {target_stock} at ${current_price:.2f}")
+                logger.info(f"Order submitted | side=buy | symbol={target_stock} | qty={shares_to_buy} | price={current_price:.2f} | type=market")
                 self.api.submit_order(
                     symbol=target_stock,
                     qty=shares_to_buy,
@@ -118,12 +129,12 @@ class AlpacaTrader:
                     type='market',
                     time_in_force='day'
                 )
-                print(f"✅ Switched to {target_stock}")
+                logger.info(f"Switch completed | symbol={target_stock} | status=success")
             else:
-                print("❌ Insufficient buying power")
+                logger.error(f"Insufficient buying power | buying_power={buying_power:.2f}")
                 
         except Exception as e:
-            print(f"❌ Error switching to {target_stock}: {e}")
+            logger.error(f"Switch failed | target_stock={target_stock} | error={e}")
     
     def _print_portfolio(self):
         """Print current portfolio status."""
@@ -131,19 +142,18 @@ class AlpacaTrader:
             account = self.api.get_account()
             positions = self.api.list_positions()
             
-            print(f"\n📊 PORTFOLIO STATUS")
-            print(f"   💵 Equity: ${float(account.equity):,.2f}")
-            print(f"   💰 Cash: ${float(account.cash):,.2f}")
-            print(f"   📈 Day P&L: ${float(account.unrealized_pl):,.2f}")
+            logger.info(f"Portfolio status | equity={float(account.equity):.2f} | cash={float(account.cash):.2f} | position_count={len(positions)}")
             
             if positions:
-                print(f"   📍 Positions:")
+                total_unrealized_pl = 0
                 for pos in positions:
                     pnl = float(pos.unrealized_pl)
                     pnl_pct = float(pos.unrealized_plpc) * 100
-                    print(f"      {pos.symbol}: {pos.qty} shares, P&L: ${pnl:.2f} ({pnl_pct:.1f}%)")
+                    total_unrealized_pl += pnl
+                    logger.info(f"Position | symbol={pos.symbol} | qty={pos.qty} | unrealized_pl={pnl:.2f} | unrealized_pl_pct={pnl_pct:.2f}")
+                logger.info(f"Total unrealized P&L | amount={total_unrealized_pl:.2f}")
             else:
-                print(f"   📍 Positions: CASH")
+                logger.info("Portfolio status | position=CASH")
                 
         except Exception as e:
-            print(f"❌ Error getting portfolio status: {e}")
+            logger.error(f"Error retrieving portfolio status | error={e}")

@@ -36,13 +36,6 @@ Volume/SMA_Volume_10
 
 ---
 
-**Market Context Fields**  
-SP500_Return (from ^GSPC)  
-VIX_Level (from ^VIX)  
-Sector_Avg_Return (optional)  
-
----
-
 **Macro Fields (from FRED)**  
 Interest_Rate  
 Inflation_Rate  
@@ -80,9 +73,9 @@ Validate on 2024
 Backtest on 2025  
 
 Use the same model for all stocks. For each stock:  
-Take its last 60 days × 32 features (normalized).  
+Take its last 60 days × 30 features (normalized).  
 Feed that into the model → get 1 predicted return.  
-Input per stock: last 60 days × 32 features → shape (1, 60, 32)  
+Input per stock: last 60 days × 30 features → shape (1, 60, 30)  
 Model output: one scalar = predicted next-week return  
 
 **Loop:**  

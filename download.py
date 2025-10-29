@@ -1,89 +1,82 @@
 """
-Step 1: Download all S&P 500 data (2010-present) and cache it.
-Run this once before preprocessing.
+Step 1: Download S&P 500 stock data from 2010 to present.
 """
-import pandas as pd
 import yfinance as yf
+import pandas as pd
 from pathlib import Path
+from datetime import datetime
 
 def get_sp500_tickers():
-    """Get S&P 500 ticker list - using static list to avoid scraping issues."""
-    # Top ~100 S&P 500 stocks for initial testing
-    # Replace with full list or use a data provider API for production
-    return [
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
-        'UNH', 'JNJ', 'JPM', 'V', 'PG', 'XOM', 'HD', 'CVX', 'MA', 'BAC',
-        'ABBV', 'PFE', 'AVGO', 'KO', 'LLY', 'TMO', 'COST', 'MRK', 'ORCL',
-        'ACN', 'DHR', 'VZ', 'ABT', 'WMT', 'CRM', 'NFLX', 'ADBE', 'NKE',
-        'TXN', 'RTX', 'QCOM', 'NEE', 'PM', 'LOW', 'BMY', 'HON', 'UPS',
-        'AMGN', 'T', 'COP', 'IBM', 'SPGI', 'CAT', 'MDT', 'SCHW', 'GS',
-        'AXP', 'BLK', 'BKNG', 'SYK', 'DE', 'TJX', 'AMD', 'LMT', 'MDLZ',
-        'ADP', 'GILD', 'CVS', 'MMC', 'C', 'LRCX', 'ADI', 'INTC', 'PYPL',
-        'TMUS', 'CB', 'MO', 'SO', 'ZTS', 'EQIX', 'CME', 'FI', 'EOG',
-        'WM', 'ITW', 'PNC', 'AON', 'CSX', 'CL', 'FCX', 'SBUX', 'DUK',
-        'ICE', 'USB', 'BSX', 'NSC', 'SPG', 'HCA', 'PLD', 'GM', 'F', 'EMR'
-    ]
+    """Get current S&P 500 constituents."""
+    # Using a reliable list of S&P 500 tickers
+    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+    table = pd.read_html(url)[0]
+    return table['Symbol'].str.replace('.', '-').tolist()
 
-def download_stock(ticker, start_date='2010-01-01', end_date='2025-12-31'):
-    """Download single stock OHLCV data."""
+def download_stock_data(ticker, start_date='2010-01-01'):
+    """Download OHLCV data for a single stock."""
     try:
-        data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
         
-        # Flatten multi-index columns (yfinance returns ('Close', 'AAPL') format)
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+        if df.empty:
+            return None
         
-        if len(data) > 300:  # Need at least ~1 year
-            return data
+        # Clean up multi-level column names if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        # Ensure we have the required columns
+        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        if not all(col in df.columns for col in required_cols):
+            return None
+        
+        return df[required_cols]
     except Exception as e:
-        print(f"  Failed {ticker}: {e}")
-    return None
+        print(f"Error downloading {ticker}: {e}")
+        return None
 
 def main():
     print("="*60)
-    print("DOWNLOADING S&P 500 DATA (2010-2025)")
+    print("DOWNLOADING S&P 500 DATA")
     print("="*60)
     
-    # Create cache directory
-    cache_dir = Path('data/raw')
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = Path('data/raw')
+    raw_dir.mkdir(parents=True, exist_ok=True)
     
-    # Get tickers
+    # Get S&P 500 tickers
+    print("\nFetching S&P 500 ticker list...")
     tickers = get_sp500_tickers()
-    print(f"\nDownloading {len(tickers)} stocks...")
+    print(f"Found {len(tickers)} tickers")
     
-    # Download each stock
+    # Download first 100 for faster testing
+    tickers = tickers[:100]
+    print(f"Downloading data for {len(tickers)} stocks (2010-present)...\n")
+    
     success_count = 0
-    failed_tickers = []
-    
-    for i, ticker in enumerate(tickers):
-        data = download_stock(ticker)
+    for i, ticker in enumerate(tickers, 1):
+        if i % 10 == 0:
+            print(f"Progress: {i}/{len(tickers)}")
         
-        if data is not None:
-            # Save to cache
-            cache_file = cache_dir / f"{ticker}.parquet"
-            data.to_parquet(cache_file)
+        output_file = raw_dir / f"{ticker}.parquet"
+        
+        # Skip if already downloaded
+        if output_file.exists():
             success_count += 1
-            
-            if (i + 1) % 50 == 0:
-                print(f"  Progress: {i+1}/{len(tickers)} ({success_count} successful)")
-        else:
-            failed_tickers.append(ticker)
+            continue
+        
+        df = download_stock_data(ticker)
+        
+        if df is not None and len(df) > 0:
+            df.to_parquet(output_file)
+            success_count += 1
     
-    # Summary
     print("\n" + "="*60)
     print("DOWNLOAD COMPLETE")
     print("="*60)
-    print(f"Successfully downloaded: {success_count} stocks")
-    print(f"Failed: {len(failed_tickers)} stocks")
-    
-    if failed_tickers:
-        print(f"\nFailed tickers: {', '.join(failed_tickers[:10])}")
-        if len(failed_tickers) > 10:
-            print(f"  ... and {len(failed_tickers) - 10} more")
-    
-    print(f"\nData saved to: {cache_dir}/")
-    print("\nNext step: Run 'python preprocess.py'")
+    print(f"Successfully downloaded: {success_count}/{len(tickers)} stocks")
+    print(f"Data saved to: {raw_dir}/")
+    print("\nNext step: Run 'python3 preprocess.py'")
 
 if __name__ == '__main__':
     main()

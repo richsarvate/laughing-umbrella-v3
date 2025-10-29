@@ -1,5 +1,5 @@
 """
-Step 4: Backtest the model on 2025 data.
+Step 4: Backtest on 2025 data - rank stocks, long top 3, short bottom 3.
 """
 import torch
 import pandas as pd
@@ -7,8 +7,9 @@ import numpy as np
 from pathlib import Path
 from model import StockTransformer
 
-def get_stock_prediction(model, features, device='cpu'):
-    """Get model prediction for a single stock."""
+
+def get_stock_ranking_score(model, features, device='cpu'):
+    """Get model ranking score for a single stock."""
     # Get last 60 days
     if len(features) < 60:
         return None
@@ -23,15 +24,16 @@ def get_stock_prediction(model, features, device='cpu'):
     model.eval()
     with torch.no_grad():
         X = torch.FloatTensor(sequence).unsqueeze(0).to(device)
-        pred = model(X).item()
+        score = model(X).item()
     
-    return pred
+    return score
+
 
 def backtest_cycle(model, processed_dir, start_date, hold_days=5, device='cpu'):
     """Run one backtest cycle."""
     predictions = {}
     
-    # Get predictions for all stocks
+    # Get ranking scores for all stocks
     for file in processed_dir.glob("*.parquet"):
         ticker = file.stem
         df = pd.read_parquet(file)
@@ -46,15 +48,15 @@ def backtest_cycle(model, processed_dir, start_date, hold_days=5, device='cpu'):
         feature_cols = [col for col in df_until.columns if col != 'target_5d_return']
         features = df_until[feature_cols]
         
-        # Predict
-        pred = get_stock_prediction(model, features, device)
-        if pred is not None:
-            predictions[ticker] = pred
+        # Get ranking score
+        score = get_stock_ranking_score(model, features, device)
+        if score is not None:
+            predictions[ticker] = score
     
     if len(predictions) < 6:
         return None
     
-    # Rank stocks
+    # Rank stocks by score
     sorted_stocks = sorted(predictions.items(), key=lambda x: x[1], reverse=True)
     long_stocks = [s[0] for s in sorted_stocks[:3]]
     short_stocks = [s[0] for s in sorted_stocks[-3:]]
@@ -70,7 +72,7 @@ def backtest_cycle(model, processed_dir, start_date, hold_days=5, device='cpu'):
             if start_idx + hold_days >= len(df):
                 continue
             
-            # Get actual 5-day return from raw close prices (need to load raw data)
+            # Get actual 5-day return from raw close prices
             raw_file = Path('data/raw') / f"{ticker}.parquet"
             raw_df = pd.read_parquet(raw_file)
             
@@ -95,6 +97,7 @@ def backtest_cycle(model, processed_dir, start_date, hold_days=5, device='cpu'):
         'short_return': short_return
     }
 
+
 def main():
     print("="*60)
     print("BACKTESTING ON 2025")
@@ -105,13 +108,16 @@ def main():
     
     # Load model
     print("\nLoading trained model...")
-    model = StockTransformer(input_dim=26, hidden_dim=128, num_heads=2, num_layers=2)
+    sample_file = list(processed_dir.glob("*.parquet"))[0]
+    sample_df = pd.read_parquet(sample_file)
+    feature_cols = [col for col in sample_df.columns if col != 'target_5d_return']
+    input_dim = len(feature_cols)
+    
+    model = StockTransformer(input_dim=input_dim, hidden_dim=128, num_heads=2, num_layers=2)
     model.load_state_dict(torch.load('model_best.pth', map_location=device))
     model = model.to(device)
     
     # Get 2025 dates
-    sample_file = list(processed_dir.glob("*.parquet"))[0]
-    sample_df = pd.read_parquet(sample_file)
     dates_2025 = sample_df[sample_df.index >= '2025-01-01'].index
     
     if len(dates_2025) < 30:
@@ -154,6 +160,7 @@ def main():
         print(f"Average return: {np.mean(results)*100:.2f}%")
         print(f"Total return: {np.sum(results)*100:.2f}%")
         print(f"Win rate: {sum(1 for r in results if r > 0) / len(results) * 100:.1f}%")
+
 
 if __name__ == '__main__':
     main()
